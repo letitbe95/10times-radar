@@ -99,19 +99,37 @@ class BrowserUse:
         except Exception:
             logger.warning("close session failed", exc_info=True)
 
+    def _ensure_cli_config(self, api_key: str | None, profile_id: str | None) -> None:
+        if api_key:
+            subprocess.run(
+                [self._bin, "config", "set", "api_key", api_key],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        if profile_id:
+            subprocess.run(
+                [
+                    self._bin,
+                    "config",
+                    "set",
+                    "cloud_connect_profile_id",
+                    profile_id,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
     def connect_cloud(self) -> None:
-        env = os.environ.copy()
         api_key = self.config.browser_use_api_key or self._local_browser_use_api_key()
         profile_id = (
             self.config.browser_use_cloud_profile_id
             or self._local_cloud_profile_id()
         )
-        if api_key:
-            env["BROWSER_USE_API_KEY"] = api_key
-        if profile_id:
-            env["BROWSER_USE_CLOUD_PROFILE_ID"] = profile_id
+        self._ensure_cli_config(api_key, profile_id)
         cmd = [self._bin, "--session", self.session, "cloud", "connect"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         output = (proc.stdout or "") + (proc.stderr or "")
         if proc.returncode != 0:
             raise RuntimeError(f"cloud connect failed:\n{output}")

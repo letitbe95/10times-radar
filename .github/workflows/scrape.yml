@@ -43,6 +43,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "${BROWSER_USE_API_KEY:-}" ]; then
+            browser-use config set api_key "$BROWSER_USE_API_KEY"
+            browser-use config set cloud_connect_profile_id "$BROWSER_USE_CLOUD_PROFILE_ID"
             browser-use cloud connect
           fi
           xvfb-run -a python3 scripts/crawl_events.py
