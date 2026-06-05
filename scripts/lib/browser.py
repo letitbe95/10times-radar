@@ -352,7 +352,19 @@ class BrowserUse:
             count = self.page.locator("tr.event-card").count()
             if count >= min_count:
                 return
-            raise TimeoutError(f"events not loaded within {timeout_s}s (found {count} cards)") from exc
+            
+            # Check if the page has loaded standard structural elements (meaning it's not a connection/load failure)
+            is_loaded = self.page.locator("footer, #footer, .pagination, header, #header").count() > 0
+            
+            # Check if we are stuck on a Cloudflare challenge page
+            title = self.page.title() or ""
+            is_cf = any(term in title for term in ["请稍候", "Cloudflare", "Just a moment", "Verify", "DDoS", "Checking your browser"])
+            
+            if is_loaded and not is_cf:
+                logger.info("Page loaded successfully but contains 0 event cards (end of pagination).")
+                return
+                
+            raise TimeoutError(f"events not loaded within {timeout_s}s (found {count} cards, title: {title})") from exc
 
     @staticmethod
     def page_url(base_url: str, page: int) -> str:
