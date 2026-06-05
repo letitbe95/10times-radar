@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/seen_events.json
+data/10times_cookies.json
+data/latest_scrape.json
+data/imported_cookies.json
+output.md
+screenshot.png
+*.log

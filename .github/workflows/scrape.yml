@@ -1,0 +1,55 @@
+name: 10times Radar
+
+on:
+  schedule:
+    - cron: "0 1 * * 1"
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install browser-use CLI
+        run: pip install browser-use
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Chromium dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+      - name: Run crawler
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          BROWSER_USE_API_KEY: ${{ secrets.BROWSER_USE_API_KEY }}
+          BROWSER_USE_CLOUD_PROFILE_ID: ${{ secrets.BROWSER_USE_CLOUD_PROFILE_ID }}
+          TENTIMES_COOKIES_B64: ${{ secrets.TENTIMES_COOKIES_B64 }}
+          LISTING_URL: https://10times.com/zh-CN/power-energy/tradeshows
+          MAX_PAGES: "0"
+          BROWSER_HEADLESS: "true"
+          CF_WAIT_SECONDS: "12"
+        run: |
+          set -euo pipefail
+          if [ -n "${BROWSER_USE_API_KEY:-}" ]; then
+            browser-use cloud connect
+          fi
+          xvfb-run -a python3 scripts/crawl_events.py
+
+      - name: Upload scrape artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-results
+          path: data/latest_scrape.json
