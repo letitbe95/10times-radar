@@ -1,4 +1,4 @@
-"""Thin wrapper around the browser-use CLI."""
+"""Thin wrapper around Playwright."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+from playwright.sync_api import sync_playwright
 
 from .config import Config
 
@@ -78,34 +80,10 @@ class BrowserUse:
         self.session = session
         self._bin = shutil.which("browser-use") or "browser-use"
         self._use_cloud = False
-
-    def _run(self, *args: str, timeout: int = 120) -> str:
-        cmd = [self._bin, "--session", self.session, *args]
-        logger.debug("run: %s", " ".join(cmd))
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=os.environ.copy(),
-        )
-        output = (proc.stdout or "") + (proc.stderr or "")
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"browser-use failed ({proc.returncode}): {' '.join(args)}\n{output}"
-            )
-        return output.strip()
-
-    def close(self) -> None:
-        try:
-            subprocess.run(
-                [self._bin, "--session", self.session, "close"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except Exception:
-            logger.warning("close session failed", exc_info=True)
+        self._playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
 
     def _ensure_cli_config(self, api_key: str | None, profile_id: str | None) -> None:
         if api_key:
@@ -159,97 +137,172 @@ class BrowserUse:
         except Exception:
             logger.warning("cloud browser cleanup failed", exc_info=True)
 
-    def connect_cloud(self) -> None:
+    def _connect_cloud_and_get_cdp(self, api_key: str, profile_id: str | None) -> str | None:
+        self._ensure_cli_config(api_key, profile_id)
+        self._stop_active_cloud_browsers()
+        
+        cmd = [self._bin, "--session", self.session, "cloud", "connect"]
+        logger.info("Running cloud connect: %s", " ".join(cmd))
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=os.environ.copy()
+            )
+            
+            cdp_url = None
+            start_time = time.time()
+            while time.time() - start_time < 30:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                line_str = line.strip()
+                logger.debug("cloud-connect: %s", line_str)
+                if "cdp_url:" in line_str:
+                    match = re.search(r"cdp_url:\s*(wss://\S+)", line_str)
+                    if match:
+                        cdp_url = match.group(1)
+                        break
+                time.sleep(0.1)
+                
+            if not cdp_url:
+                logger.error("Failed to extract cdp_url from cloud connect output")
+                proc.kill()
+                return None
+                
+            return cdp_url
+        except Exception:
+            logger.exception("Error connecting to browser-use cloud")
+            return None
+
+    def bootstrap(self) -> None:
+        """Establish authenticated browser session."""
+        logger.info("Initializing Playwright...")
+        self._playwright = sync_playwright().start()
+
+        # Check for cloud connection credentials
         api_key = self.config.browser_use_api_key or self._local_browser_use_api_key()
         profile_id = (
             self.config.browser_use_cloud_profile_id
             or self._local_cloud_profile_id()
         )
-        self._ensure_cli_config(api_key, profile_id)
-        self._stop_active_cloud_browsers()
-        cmd = [self._bin, "--session", self.session, "cloud", "connect"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        output = (proc.stdout or "") + (proc.stderr or "")
-        if proc.returncode != 0:
-            raise RuntimeError(f"cloud connect failed:\n{output}")
-        self._use_cloud = True
-        logger.info("cloud browser connected")
+        
+        cdp_url = None
+        if api_key:
+            logger.info("Attempting to connect to Browser Use Cloud...")
+            cdp_url = self._connect_cloud_and_get_cdp(api_key, profile_id)
 
-    def import_cookies(self, path: Path) -> None:
-        self._run("cookies", "import", str(path))
-
-    def open(self, url: str) -> None:
-        args = ["open", url]
-        headed = not self.config.browser_headless and not self._use_cloud
-        if headed:
-            args = ["--headed", *args]
-        self._run(*args, timeout=max(120, self.config.page_timeout_ms // 1000))
-
-    def eval_json(self, js: str) -> Any:
-        raw = self._run("eval", js, timeout=60)
-        return self._parse_eval_result(raw)
-
-    def wait_for_events(self, min_count: int = 1, timeout_s: int = 30) -> None:
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
-            try:
-                count = int(self.eval_json(
-                    "document.querySelectorAll('tr.event-card').length"
-                ))
-                if count >= min_count:
-                    return
-            except Exception:
-                pass
-            time.sleep(1)
-        raise TimeoutError(f"events not loaded within {timeout_s}s")
-
-    @staticmethod
-    def _parse_eval_result(raw: str) -> Any:
-        if raw.startswith("result:"):
-            raw = raw[len("result:") :].strip()
-        if raw.startswith("{") or raw.startswith("["):
-            try:
-                return json.loads(raw)
-            except json.JSONDecodeError:
-                pass
-        if raw.startswith("{'") or raw.startswith("[{"):
-            try:
-                import ast
-
-                return ast.literal_eval(raw)
-            except (SyntaxError, ValueError):
-                pass
-        return raw
-
-    def bootstrap(self) -> None:
-        """Establish authenticated browser session."""
-        try:
-            subprocess.run(
-                [self._bin, "close", "--all"],
-                capture_output=True,
-                text=True,
-                timeout=30,
+        if cdp_url:
+            logger.info("Connecting Playwright over Cloud CDP: %s", cdp_url)
+            self.browser = self._playwright.chromium.connect_over_cdp(cdp_url)
+            self._use_cloud = True
+            self.context = self.browser.contexts[0]
+            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+        else:
+            logger.info("Launching local Chromium (headless=%s)", self.config.browser_headless)
+            self.browser = self._playwright.chromium.launch(
+                headless=self.config.browser_headless,
+                channel="chrome" if not self.config.browser_headless else None,
+                args=["--disable-blink-features=AutomationControlled"]
             )
+            self.context = self.browser.new_context(
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 800}
+            )
+
+            cookies_path = self._resolve_cookies_path()
+            if cookies_path:
+                try:
+                    cookies_raw = json.loads(cookies_path.read_text(encoding="utf-8"))
+                    if isinstance(cookies_raw, dict):
+                        cookies_list = cookies_raw.get("cookies", [])
+                    elif isinstance(cookies_raw, list):
+                        cookies_list = cookies_raw
+                    else:
+                        cookies_list = []
+
+                    sanitized_cookies = []
+                    for cookie in cookies_list:
+                        if not isinstance(cookie, dict) or "name" not in cookie or "value" not in cookie:
+                            continue
+
+                        sanitized = {
+                            "name": str(cookie["name"]),
+                            "value": str(cookie["value"]),
+                        }
+
+                        if "domain" in cookie:
+                            sanitized["domain"] = str(cookie["domain"])
+                        else:
+                            sanitized["domain"] = ".10times.com"
+
+                        if "path" in cookie:
+                            sanitized["path"] = str(cookie["path"])
+                        if "expires" in cookie:
+                            try:
+                                val = cookie["expires"]
+                                if val is not None:
+                                    sanitized["expires"] = float(val)
+                            except (ValueError, TypeError):
+                                pass
+                        if "httpOnly" in cookie:
+                            sanitized["httpOnly"] = bool(cookie["httpOnly"])
+                        if "secure" in cookie:
+                            sanitized["secure"] = bool(cookie["secure"])
+                        if "sameSite" in cookie:
+                            val = str(cookie["sameSite"])
+                            if val in {"Lax", "None", "Strict"}:
+                                sanitized["sameSite"] = val
+
+                        sanitized_cookies.append(sanitized)
+
+                    if sanitized_cookies:
+                        self.context.add_cookies(sanitized_cookies)
+                        logger.info("Imported %d cookies from %s", len(sanitized_cookies), cookies_path)
+                    else:
+                        logger.warning("No valid cookies found in %s", cookies_path)
+                except Exception:
+                    logger.exception("Failed to load cookies from %s", cookies_path)
+            else:
+                logger.warning("No cookies file found; proceeding without login")
+
+            self.page = self.context.new_page()
+
+    def close(self) -> None:
+        logger.info("Closing Playwright browser...")
+        try:
+            if self.page:
+                self.page.close()
+            if self.context:
+                self.context.close()
+            if self.browser:
+                self.browser.close()
         except Exception:
-            logger.warning("close all sessions failed", exc_info=True)
-        self.close()
-        has_cloud = (
-            self.config.browser_use_api_key
-            or os.getenv("BROWSER_USE_API_KEY")
-            or self._local_browser_use_api_key()
-        )
-        if has_cloud:
-            self.connect_cloud()
-            return
-
-        cookies_path = self._resolve_cookies_path()
-        if cookies_path:
-            self._run("open", "about:blank")
-            self.import_cookies(cookies_path)
-            logger.info("imported cookies from %s", cookies_path)
-            return
-
-        logger.warning("no cloud profile or cookies; proceeding without login")
+            logger.warning("Error closing browser/context", exc_info=True)
+        finally:
+            if self._playwright:
+                try:
+                    self._playwright.stop()
+                except Exception:
+                    pass
+                self._playwright = None
+            self.page = None
+            self.context = None
+            self.browser = None
+            
+        if self._use_cloud:
+            try:
+                subprocess.run(
+                    [self._bin, "--session", self.session, "close"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except Exception:
+                logger.warning("close session failed", exc_info=True)
+            self._use_cloud = False
 
     @staticmethod
     def _read_browser_use_config() -> dict[str, Any]:
@@ -284,6 +337,23 @@ class BrowserUse:
             return local
         return None
 
+    def open(self, url: str) -> None:
+        logger.info("Navigating to %s", url)
+        self.page.goto(url, timeout=self.config.page_timeout_ms)
+
+    def eval_json(self, js: str) -> Any:
+        return self.page.evaluate(js)
+
+    def wait_for_events(self, min_count: int = 1, timeout_s: int = 30) -> None:
+        logger.info("Waiting for event cards to load...")
+        try:
+            self.page.wait_for_selector("tr.event-card", state="attached", timeout=timeout_s * 1000)
+        except Exception as exc:
+            count = self.page.locator("tr.event-card").count()
+            if count >= min_count:
+                return
+            raise TimeoutError(f"events not loaded within {timeout_s}s (found {count} cards)") from exc
+
     @staticmethod
     def page_url(base_url: str, page: int) -> str:
         parsed = urlparse(base_url)
@@ -295,23 +365,40 @@ class BrowserUse:
         new_query = urlencode({k: v[0] for k, v in query.items()})
         return urlunparse(parsed._replace(query=new_query, fragment=""))
 
-    def scrape_page(self, url: str, page_num: int) -> list[dict[str, Any]]:
-        self.open(url)
-        time.sleep(self.config.cf_wait_seconds)
-        self.wait_for_events()
-        current = str(self.eval_json(CURRENT_PAGE_JS))
-        if page_num > 1 and current != str(page_num):
-            logger.warning("expected page %s, got %s", page_num, current)
-        rows = self.eval_json(EXTRACT_EVENTS_JS)
-        if not isinstance(rows, list):
-            raise RuntimeError(f"unexpected scrape payload: {rows!r}")
-        for row in rows:
-            row["page"] = page_num
-        return rows
+    def scrape_page(self, url: str, page_num: int, *, retries: int = 2) -> list[dict[str, Any]]:
+        last_error: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                self.open(url)
+                if self.config.cf_wait_seconds > 0:
+                    logger.info("Sleeping %ds for Cloudflare bypass...", self.config.cf_wait_seconds)
+                    time.sleep(self.config.cf_wait_seconds)
+                self.wait_for_events(timeout_s=45)
+                current = str(self.eval_json(CURRENT_PAGE_JS))
+                if page_num > 1 and current not in {str(page_num), "undefined", ""}:
+                    logger.warning("expected page %s, got %s", page_num, current)
+                rows = self.eval_json(EXTRACT_EVENTS_JS)
+                if not isinstance(rows, list):
+                    raise RuntimeError(f"unexpected scrape payload: {rows!r}")
+                for row in rows:
+                    row["page"] = page_num
+                return rows
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "scrape page %s attempt %s failed: %s",
+                    page_num,
+                    attempt + 1,
+                    exc,
+                )
+                time.sleep(3)
+        raise last_error or RuntimeError(f"failed to scrape page {page_num}")
 
     def estimate_total_pages(self, base_url: str, per_page: int = 40) -> int:
         self.open(base_url)
-        time.sleep(self.config.cf_wait_seconds)
+        if self.config.cf_wait_seconds > 0:
+            logger.info("Sleeping %ds for Cloudflare bypass (estimating pages)...", self.config.cf_wait_seconds)
+            time.sleep(self.config.cf_wait_seconds)
         total_raw = self.eval_json(TOTAL_EVENTS_JS)
         total = int(str(total_raw).strip() or "0")
         if total <= 0:
