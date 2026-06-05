@@ -129,6 +129,36 @@ class BrowserUse:
                 text=True,
             )
 
+    def _stop_active_cloud_browsers(self) -> None:
+        try:
+            proc = subprocess.run(
+                [self._bin, "cloud", "v2", "GET", "/browsers"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if proc.returncode != 0:
+                return
+            data = json.loads(proc.stdout.strip())
+            for item in data.get("items", []):
+                if item.get("status") == "active" and item.get("id"):
+                    subprocess.run(
+                        [
+                            self._bin,
+                            "cloud",
+                            "v2",
+                            "PATCH",
+                            f"/browsers/{item['id']}",
+                            '{"action":"stop"}',
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    logger.info("stopped cloud browser %s", item["id"])
+        except Exception:
+            logger.warning("cloud browser cleanup failed", exc_info=True)
+
     def connect_cloud(self) -> None:
         api_key = self.config.browser_use_api_key or self._local_browser_use_api_key()
         profile_id = (
@@ -136,6 +166,7 @@ class BrowserUse:
             or self._local_cloud_profile_id()
         )
         self._ensure_cli_config(api_key, profile_id)
+        self._stop_active_cloud_browsers()
         cmd = [self._bin, "--session", self.session, "cloud", "connect"]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         output = (proc.stdout or "") + (proc.stderr or "")
