@@ -39,7 +39,7 @@ jobs:
           BROWSER_USE_CLOUD_PROFILE_ID: ${{ secrets.BROWSER_USE_CLOUD_PROFILE_ID }}
           TENTIMES_COOKIES_B64: ${{ secrets.TENTIMES_COOKIES_B64 }}
           LISTING_URL: https://10times.com/zh-CN/power-energy/tradeshows
-          MAX_PAGES: "5"
+          MAX_PAGES: "0"
           BROWSER_HEADLESS: "true"
           CF_WAIT_SECONDS: "12"
         run: |
