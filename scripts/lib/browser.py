@@ -388,6 +388,9 @@ class BrowserUse:
                 if is_cf and self.config.cf_wait_seconds > 0:
                     logger.info("Cloudflare challenge detected on page %d (title: '%s'). Sleeping %ds...", page_num, title, self.config.cf_wait_seconds)
                     time.sleep(self.config.cf_wait_seconds)
+                else:
+                    # Small safety sleep to prevent rate-limiting (3 seconds is standard)
+                    time.sleep(3)
                 self.wait_for_events(timeout_s=45)
                 current = str(self.eval_json(CURRENT_PAGE_JS))
                 if page_num > 1 and current not in {str(page_num), "undefined", ""}:
@@ -417,6 +420,8 @@ class BrowserUse:
         if is_cf and self.config.cf_wait_seconds > 0:
             logger.info("Cloudflare challenge detected during page estimation (title: '%s'). Sleeping %ds...", title, self.config.cf_wait_seconds)
             time.sleep(self.config.cf_wait_seconds)
+        else:
+            time.sleep(3)
         total_raw = self.eval_json(TOTAL_EVENTS_JS)
         total = int(str(total_raw).strip() or "0")
         if total <= 0:
