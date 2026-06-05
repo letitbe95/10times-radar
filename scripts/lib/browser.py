@@ -192,6 +192,15 @@ class BrowserUse:
 
     def bootstrap(self) -> None:
         """Establish authenticated browser session."""
+        try:
+            subprocess.run(
+                [self._bin, "close", "--all"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception:
+            logger.warning("close all sessions failed", exc_info=True)
         self.close()
         has_cloud = (
             self.config.browser_use_api_key
