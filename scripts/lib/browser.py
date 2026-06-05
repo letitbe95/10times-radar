@@ -56,7 +56,15 @@ EXTRACT_EVENTS_JS = r"""
 """
 
 TOTAL_EVENTS_JS = r"""
-(() => document.body.innerText.match(/(\d+)精选活动/)?.[1] || '0')()
+(() => {
+  const text = document.body.innerText || '';
+  const patterns = [/(\d[\d,]*)\s*精选活动/, /(\d[\d,]*)\s*场活动/, /(\d[\d,]*)\s*Events/i];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m) return m[1].replace(/,/g, '');
+  }
+  return '0';
+})()
 """
 
 CURRENT_PAGE_JS = r"""

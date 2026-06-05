@@ -85,23 +85,37 @@ def main() -> int:
 
     try:
         browser.bootstrap()
-        total_pages = browser.estimate_total_pages(config.listing_url)
+        estimated_pages = browser.estimate_total_pages(config.listing_url)
         page_limit = (
             max_pages_override
             if max_pages_override is not None
             else config.max_pages
         )
-        max_pages = page_limit if page_limit > 0 else total_pages
-        max_pages = min(max_pages, total_pages)
-        logger.info("scraping %s pages (total available: %s)", max_pages, total_pages)
+        logger.info(
+            "starting crawl (estimated pages: %s, limit: %s)",
+            estimated_pages,
+            page_limit if page_limit > 0 else "none",
+        )
 
-        for page in range(1, max_pages + 1):
+        page = 1
+        while True:
+            if page_limit > 0 and page > page_limit:
+                break
             url = BrowserUse.page_url(config.listing_url, page)
-            logger.info("page %s/%s: %s", page, max_pages, url)
+            logger.info("page %s: %s", page, url)
             rows = browser.scrape_page(url, page)
             page_events = rows_to_events(rows)
+            if not page_events:
+                logger.info("page %s empty, stopping", page)
+                break
             all_events.extend(page_events)
-            logger.info("page %s -> %s events (running total %s)", page, len(page_events), len(all_events))
+            logger.info(
+                "page %s -> %s events (running total %s)",
+                page,
+                len(page_events),
+                len(all_events),
+            )
+            page += 1
 
         matched = filter_events(config, all_events, use_llm=not args.no_llm)
         logger.info("matched %s / %s events", len(matched), len(all_events))
