@@ -382,8 +382,11 @@ class BrowserUse:
         for attempt in range(retries + 1):
             try:
                 self.open(url)
-                if self.config.cf_wait_seconds > 0:
-                    logger.info("Sleeping %ds for Cloudflare bypass...", self.config.cf_wait_seconds)
+                # Dynamic Cloudflare detection
+                title = self.page.title() or ""
+                is_cf = any(term in title for term in ["请稍候", "Cloudflare", "Just a moment", "Verify", "DDoS", "Checking your browser"])
+                if is_cf and self.config.cf_wait_seconds > 0:
+                    logger.info("Cloudflare challenge detected on page %d (title: '%s'). Sleeping %ds...", page_num, title, self.config.cf_wait_seconds)
                     time.sleep(self.config.cf_wait_seconds)
                 self.wait_for_events(timeout_s=45)
                 current = str(self.eval_json(CURRENT_PAGE_JS))
@@ -408,8 +411,11 @@ class BrowserUse:
 
     def estimate_total_pages(self, base_url: str, per_page: int = 40) -> int:
         self.open(base_url)
-        if self.config.cf_wait_seconds > 0:
-            logger.info("Sleeping %ds for Cloudflare bypass (estimating pages)...", self.config.cf_wait_seconds)
+        # Dynamic Cloudflare detection
+        title = self.page.title() or ""
+        is_cf = any(term in title for term in ["请稍候", "Cloudflare", "Just a moment", "Verify", "DDoS", "Checking your browser"])
+        if is_cf and self.config.cf_wait_seconds > 0:
+            logger.info("Cloudflare challenge detected during page estimation (title: '%s'). Sleeping %ds...", title, self.config.cf_wait_seconds)
             time.sleep(self.config.cf_wait_seconds)
         total_raw = self.eval_json(TOTAL_EVENTS_JS)
         total = int(str(total_raw).strip() or "0")
